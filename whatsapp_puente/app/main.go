@@ -208,7 +208,7 @@ func (a *app) chatName(jid types.JID) string {
 	}
 	name := ""
 	if jid.Server == types.GroupServer {
-		if gi, err := a.cli.GetGroupInfo(jid); err == nil && gi != nil {
+		if gi, err := a.cli.GetGroupInfo(a.ctx, jid); err == nil && gi != nil {
 			name = gi.Name
 		}
 	} else if c, err := a.cli.Store.Contacts.GetContact(a.ctx, jid); err == nil && c.Found {
@@ -592,13 +592,13 @@ func (a *app) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Como una persona: "escribiendo..." unos segundos según la longitud
-	_ = a.cli.SendChatPresence(jid, types.ChatPresenceComposing, types.ChatPresenceMediaText)
+	_ = a.cli.SendChatPresence(a.ctx, jid, types.ChatPresenceComposing, types.ChatPresenceMediaText)
 	wait := time.Duration(2000+40*len([]rune(req.Text))) * time.Millisecond
 	if wait > 9*time.Second {
 		wait = 9 * time.Second
 	}
 	time.Sleep(wait)
-	_ = a.cli.SendChatPresence(jid, types.ChatPresencePaused, types.ChatPresenceMediaText)
+	_ = a.cli.SendChatPresence(a.ctx, jid, types.ChatPresencePaused, types.ChatPresenceMediaText)
 	resp, err := a.cli.SendMessage(a.ctx, jid, &waE2E.Message{Conversation: &req.Text})
 	if err != nil {
 		http.Error(w, "no se pudo enviar: "+err.Error(), 502)

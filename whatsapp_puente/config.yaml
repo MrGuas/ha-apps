@@ -1,5 +1,5 @@
 name: WhatsApp puente
-version: "0.1.0"
+version: "0.1.1"
 slug: whatsapp_puente
 description: Guarda tus conversaciones de WhatsApp (solo texto) para resúmenes y, más adelante, envíos programados desde Home Assistant.
 url: https://github.com/MrGuas/ha-apps
