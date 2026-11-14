@@ -8,8 +8,6 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
-	"fmt"
-	"html/template"
 	"log"
 	"net"
 	"net/http"
@@ -35,9 +33,11 @@ import (
 const dataDir = "/data"
 
 type options struct {
-	APIToken    string   `json:"api_token"`
-	SendEnabled bool     `json:"send_enabled"`
-	AllowedSend []string `json:"allowed_send"`
+	APIToken      string   `json:"api_token"`
+	AllowedSend   []string `json:"allowed_send"`
+	NotifyService string   `json:"notify_service"`
+	MaxPerDay     int      `json:"max_per_day"`
+	LateMinutes   int      `json:"late_minutes"`
 }
 
 type app struct {
@@ -80,6 +80,8 @@ func main() {
 
 	go a.serveHTTP()
 	go a.connectLoop()
+	go a.schedulerLoop()
+	go a.haEventsLoop()
 
 	<-ctx.Done()
 	a.cli.Disconnect()
@@ -90,6 +92,15 @@ func (a *app) loadOptions() {
 	b, err := os.ReadFile(dataDir + "/options.json")
 	if err == nil {
 		_ = json.Unmarshal(b, &a.opt)
+	}
+	if a.opt.NotifyService == "" {
+		a.opt.NotifyService = "notify.mobile_app_aitoroneplus"
+	}
+	if a.opt.MaxPerDay <= 0 {
+		a.opt.MaxPerDay = 20
+	}
+	if a.opt.LateMinutes <= 0 {
+		a.opt.LateMinutes = 30
 	}
 	if a.opt.APIToken == "" {
 		log.Println("AVISO: api_token vacío; la API solo responderá a la interfaz de Home Assistant (Ingress).")
@@ -417,6 +428,10 @@ CREATE TABLE IF NOT EXISTS mensajes (
   PRIMARY KEY (id, chat));
 CREATE INDEX IF NOT EXISTS idx_mensajes_chat_ts ON mensajes(chat, ts);
 CREATE INDEX IF NOT EXISTS idx_mensajes_ts ON mensajes(ts);
+CREATE TABLE IF NOT EXISTS programados (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, msg_id TEXT, chat TEXT, chat_nombre TEXT, texto TEXT,
+  cuando INTEGER, origen TEXT, estado TEXT, creado INTEGER, enviado INTEGER, error TEXT, intentos INTEGER DEFAULT 0);
+CREATE INDEX IF NOT EXISTS idx_programados_estado ON programados(estado, cuando);
 CREATE TABLE IF NOT EXISTS nombres (jid TEXT PRIMARY KEY, nombre TEXT);
 CREATE TABLE IF NOT EXISTS chats (
   jid TEXT PRIMARY KEY, nombre TEXT, grupo INTEGER, ultimo_ts INTEGER);`)
@@ -463,7 +478,7 @@ func (a *app) serveHTTP() {
 	mux.HandleFunc("/api/chats", a.auth(a.handleChats))
 	mux.HandleFunc("/api/messages", a.auth(a.handleMessages))
 	mux.HandleFunc("/api/search", a.auth(a.handleSearch))
-	mux.HandleFunc("/api/send", a.auth(a.handleSend))
+	a.routesProgramados(mux)
 	mux.HandleFunc("/api/fix-names", a.auth(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]int{"actualizados": a.fixNames()})
 	}))
@@ -486,8 +501,9 @@ func (a *app) stats() map[string]interface{} {
 		"esperando_qr":        qr != "",
 		"mensajes":            total,
 		"chats":               chats,
-		"envio_activo":        a.opt.SendEnabled,
 		"destinos_permitidos": len(a.opt.AllowedSend),
+		"hora_servidor":       time.Now().Format("02/01/2006 15:04 MST"),
+		"programados":         a.countPending(),
 	}
 	if a.cli.Store.ID != nil {
 		out["cuenta"] = a.cli.Store.ID.User
@@ -674,100 +690,3 @@ func (a *app) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, out)
 }
-
-/* Envío: desactivado por defecto; solo a destinos de la lista blanca (JID, número o nombre exacto del chat) */
-func (a *app) handleSend(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "usa POST", 405)
-		return
-	}
-	if !a.opt.SendEnabled {
-		http.Error(w, "el envío está desactivado (send_enabled)", 403)
-		return
-	}
-	var req struct {
-		To   string `json:"to"`
-		Text string `json:"text"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.To) == "" || strings.TrimSpace(req.Text) == "" {
-		http.Error(w, "faltan to y text", 400)
-		return
-	}
-	jidStr, name := a.resolveChat(req.To)
-	if jidStr == "" && !strings.Contains(req.To, "@") {
-		jidStr = strings.TrimPrefix(strings.ReplaceAll(req.To, " ", ""), "+") + "@" + types.DefaultUserServer
-	} else if jidStr == "" {
-		jidStr = req.To
-	}
-	jid, err := types.ParseJID(jidStr)
-	if err != nil {
-		http.Error(w, "destino no válido", 400)
-		return
-	}
-	allowed := false
-	for _, x := range a.opt.AllowedSend {
-		x = strings.TrimSpace(x)
-		if x != "" && (strings.EqualFold(x, name) || x == jid.String() || strings.TrimPrefix(x, "+") == jid.User) {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
-		http.Error(w, "destino fuera de la lista blanca", 403)
-		return
-	}
-	// Como una persona: "escribiendo..." unos segundos según la longitud
-	_ = a.cli.SendChatPresence(a.ctx, jid, types.ChatPresenceComposing, types.ChatPresenceMediaText)
-	wait := time.Duration(2000+40*len([]rune(req.Text))) * time.Millisecond
-	if wait > 9*time.Second {
-		wait = 9 * time.Second
-	}
-	time.Sleep(wait)
-	_ = a.cli.SendChatPresence(a.ctx, jid, types.ChatPresencePaused, types.ChatPresenceMediaText)
-	resp, err := a.cli.SendMessage(a.ctx, jid, &waE2E.Message{Conversation: &req.Text})
-	if err != nil {
-		http.Error(w, "no se pudo enviar: "+err.Error(), 502)
-		return
-	}
-	writeJSON(w, map[string]interface{}{"ok": true, "id": resp.ID, "a": firstNonEmpty(name, jid.String())})
-}
-
-/* ---------------- página (Ingress) ---------------- */
-
-var page = template.Must(template.New("p").Parse(`<!doctype html><html lang="es"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>WhatsApp puente</title>
-<style>
-:root{color-scheme:light dark;--bg:#f6f7f9;--card:#fff;--txt:#111;--sub:#667;--ok:#16a34a;--warn:#d97706}
-@media (prefers-color-scheme:dark){:root{--bg:#111318;--card:#1b1e25;--txt:#eee;--sub:#99a}}
-body{margin:0;font:16px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--txt)}
-main{max-width:760px;margin:0 auto;padding:20px}
-.card{background:var(--card);border-radius:14px;padding:18px 20px;margin-bottom:14px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
-h1{font-size:22px;margin:0 0 6px}.sub{color:var(--sub)}
-.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;background:var(--warn)}
-.dot.ok{background:var(--ok)}
-.qr{text-align:center}.qr img{width:300px;height:300px;background:#fff;padding:10px;border-radius:12px}
-table{width:100%;border-collapse:collapse}td{padding:6px 4px;border-bottom:1px solid rgba(128,128,128,.2)}
-td.n{text-align:right;color:var(--sub);white-space:nowrap}
-</style></head><body><main>
-<div class="card"><h1>💬 WhatsApp puente</h1>
-<div><span class="dot {{if .S.conectado}}ok{{end}}"></span><b>{{.S.estado}}</b>{{if .S.nombre}} · {{.S.nombre}}{{end}}</div>
-<div class="sub">{{.S.mensajes}} mensajes guardados en {{.S.chats}} chats{{if .S.ultimo_mensaje}} · último {{.S.ultimo_mensaje}}{{end}} · envío {{if .S.envio_activo}}activado ({{.S.destinos_permitidos}} destinos){{else}}desactivado{{end}}</div></div>
-{{if .S.esperando_qr}}<div class="card qr"><h1>Vincula tu WhatsApp</h1>
-<p class="sub">En el móvil: WhatsApp → Ajustes → Dispositivos vinculados → Vincular dispositivo, y escanea este código.</p>
-<img src="qr.png?t={{.T}}" alt="Código QR"></div>{{end}}
-{{if .C}}<div class="card"><h1>Chats recientes</h1><table>
-{{range .C}}<tr><td>{{if .Grupo}}👥 {{end}}{{if .Nombre}}{{.Nombre}}{{else}}{{.JID}}{{end}}</td><td class="n">{{.Mensajes}} · {{.Ultimo}}</td></tr>{{end}}
-</table></div>{{end}}
-<p class="sub">Solo se guarda el texto. Fotos, vídeos y audios no se descargan. La página se actualiza sola.</p>
-</main><script>setTimeout(()=>location.reload(), {{if .S.esperando_qr}}4000{{else}}30000{{end}})</script></body></html>`))
-
-func (a *app) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = page.Execute(w, map[string]interface{}{"S": a.stats(), "C": a.listChats("", 25), "T": time.Now().UnixNano()})
-}
-
-var _ = fmt.Sprintf
