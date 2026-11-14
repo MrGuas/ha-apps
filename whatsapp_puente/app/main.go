@@ -633,11 +633,14 @@ func (a *app) handleMessages(w http.ResponseWriter, r *http.Request) {
 		var m msgRow
 		if rows.Scan(&ts, &m.Quien, &m.Texto) == nil {
 			m.Hora = time.Unix(ts, 0).Local().Format("2006-01-02 15:04")
-			m.Texto = a.withMentions(m.Texto)
-			if m.Quien == "" {
-				m.Quien = "?"
-			}
 			msgs = append(msgs, m)
+		}
+	}
+	rows.Close() // la base de datos tiene una sola conexión: soltarla antes de buscar nombres
+	for i := range msgs {
+		msgs[i].Texto = a.withMentions(msgs[i].Texto)
+		if msgs[i].Quien == "" {
+			msgs[i].Quien = "?"
 		}
 	}
 	writeJSON(w, map[string]interface{}{"chat": name, "jid": jid, "desde": time.Unix(since, 0).Local().Format("2006-01-02 15:04"), "total": len(msgs), "mensajes": msgs})
