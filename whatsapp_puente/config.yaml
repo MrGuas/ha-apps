@@ -1,0 +1,28 @@
+name: WhatsApp puente
+version: "0.1.0"
+slug: whatsapp_puente
+description: Guarda tus conversaciones de WhatsApp (solo texto) para resúmenes y, más adelante, envíos programados desde Home Assistant.
+url: https://github.com/MrGuas/ha-apps
+arch:
+  - amd64
+  - aarch64
+startup: application
+boot: auto
+init: false
+ingress: true
+ingress_port: 8080
+panel_icon: mdi:whatsapp
+panel_title: WhatsApp
+backup_exclude:
+  - "*.db"
+  - "*.db-wal"
+  - "*.db-shm"
+options:
+  api_token: ""
+  send_enabled: false
+  allowed_send: []
+schema:
+  api_token: password
+  send_enabled: bool
+  allowed_send:
+    - str
