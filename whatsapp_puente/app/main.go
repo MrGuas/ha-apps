@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -158,6 +159,7 @@ func (a *app) onEvent(evt interface{}) {
 	switch v := evt.(type) {
 	case *events.Connected:
 		a.setStatus("conectado")
+		a.scheduleFix()
 	case *events.Disconnected:
 		a.setStatus("desconectado (reintentando)")
 	case *events.LoggedOut:
@@ -167,6 +169,19 @@ func (a *app) onEvent(evt interface{}) {
 	case *events.HistorySync:
 		a.saveHistory(v)
 	}
+}
+
+var fixTimer *time.Timer
+var fixMu sync.Mutex
+
+// Repasa nombres 60 s después del último aviso (los historiales llegan a trozos)
+func (a *app) scheduleFix() {
+	fixMu.Lock()
+	defer fixMu.Unlock()
+	if fixTimer != nil {
+		fixTimer.Stop()
+	}
+	fixTimer = time.AfterFunc(60*time.Second, func() { a.fixNames() })
 }
 
 func textOf(m *waE2E.Message) (text, kind string) {
@@ -211,13 +226,102 @@ func (a *app) chatName(jid types.JID) string {
 		if gi, err := a.cli.GetGroupInfo(a.ctx, jid); err == nil && gi != nil {
 			name = gi.Name
 		}
-	} else if c, err := a.cli.Store.Contacts.GetContact(a.ctx, jid); err == nil && c.Found {
-		name = firstNonEmpty(c.FullName, c.FirstName, c.PushName, c.BusinessName)
+	} else {
+		name = a.personName(jid)
 	}
 	if name != "" {
 		a.names.Store(key, name)
 	}
 	return name
+}
+
+func (a *app) contactName(j types.JID) string {
+	if c, err := a.cli.Store.Contacts.GetContact(a.ctx, j); err == nil && c.Found {
+		return firstNonEmpty(c.FullName, c.FirstName, c.PushName, c.BusinessName)
+	}
+	return ""
+}
+
+func (a *app) storedName(j types.JID) string {
+	var n string
+	_ = a.db.QueryRow(`SELECT nombre FROM nombres WHERE jid = ?`, j.ToNonAD().String()).Scan(&n)
+	return n
+}
+
+// Nombre de una persona: agenda del móvil, nombre de perfil visto, y si es un identificador
+// interno de WhatsApp (LID, "@lid") se traduce a su número de teléfono primero.
+func (a *app) personName(j types.JID) string {
+	j = j.ToNonAD()
+	if n := firstNonEmpty(a.contactName(j), a.storedName(j)); n != "" {
+		return n
+	}
+	if j.Server == types.HiddenUserServer {
+		if pn, err := a.cli.Store.LIDs.GetPNForLID(a.ctx, j); err == nil && !pn.IsEmpty() {
+			if n := firstNonEmpty(a.contactName(pn), a.storedName(pn)); n != "" {
+				return n
+			}
+			return "+" + pn.User
+		}
+	}
+	return ""
+}
+
+func (a *app) rememberName(j types.JID, name string) {
+	name = strings.TrimSpace(name)
+	if name == "" || j.IsEmpty() {
+		return
+	}
+	_, _ = a.db.Exec(`INSERT INTO nombres (jid, nombre) VALUES (?, ?)
+		ON CONFLICT(jid) DO UPDATE SET nombre = excluded.nombre`, j.ToNonAD().String(), name)
+}
+
+// Rellena los remitentes sin nombre de mensajes ya guardados
+func (a *app) fixNames() int {
+	rows, err := a.db.Query(`SELECT DISTINCT remitente FROM mensajes
+		WHERE de_mi = 0 AND (nombre_remitente IS NULL OR nombre_remitente = '' OR nombre_remitente LIKE '+%')`)
+	if err != nil {
+		return 0
+	}
+	var jids []string
+	for rows.Next() {
+		var s string
+		if rows.Scan(&s) == nil {
+			jids = append(jids, s)
+		}
+	}
+	rows.Close()
+	n := 0
+	for _, s := range jids {
+		j, err := types.ParseJID(s)
+		if err != nil {
+			continue
+		}
+		a.names.Delete(j.ToNonAD().String())
+		if name := a.personName(j); name != "" {
+			if res, err := a.db.Exec(`UPDATE mensajes SET nombre_remitente = ? WHERE remitente = ? AND de_mi = 0
+				AND (nombre_remitente IS NULL OR nombre_remitente = '' OR nombre_remitente LIKE '+%')`, name, s); err == nil {
+				c, _ := res.RowsAffected()
+				n += int(c)
+			}
+		}
+	}
+	log.Printf("Nombres recuperados en %d mensajes (%d remitentes revisados)", n, len(jids))
+	return n
+}
+
+var mentionRe = regexp.MustCompile(`@(\d{6,})`)
+
+// Cambia "@123456789" (menciones) por "@Nombre" cuando se sabe quién es
+func (a *app) withMentions(t string) string {
+	return mentionRe.ReplaceAllStringFunc(t, func(m string) string {
+		num := m[1:]
+		for _, srv := range []string{types.HiddenUserServer, types.DefaultUserServer} {
+			if n := a.personName(types.NewJID(num, srv)); n != "" && !strings.HasPrefix(n, "+") {
+				return "@" + n
+			}
+		}
+		return m
+	})
 }
 
 func firstNonEmpty(s ...string) string {
@@ -240,11 +344,14 @@ func (a *app) saveMessage(evt *events.Message, fromHistory bool) {
 	}
 	chat := info.Chat.ToNonAD()
 	sender := info.Sender.ToNonAD()
-	senderName := info.PushName
+	if !info.IsFromMe && info.PushName != "" {
+		a.rememberName(sender, info.PushName)
+	}
+	senderName := ""
 	if info.IsFromMe {
 		senderName = "Yo"
-	} else if senderName == "" {
-		senderName = a.chatName(sender)
+	} else {
+		senderName = firstNonEmpty(a.personName(sender), info.PushName)
 	}
 	chatName := a.chatName(chat)
 	if chatName == "" && chat.Server != types.GroupServer && !info.IsFromMe {
@@ -268,6 +375,11 @@ func (a *app) saveMessage(evt *events.Message, fromHistory bool) {
 }
 
 func (a *app) saveHistory(h *events.HistorySync) {
+	for _, pn := range h.Data.GetPushnames() {
+		if j, err := types.ParseJID(pn.GetID()); err == nil {
+			a.rememberName(j, pn.GetPushname())
+		}
+	}
 	n := 0
 	for _, conv := range h.Data.GetConversations() {
 		chatJID, err := types.ParseJID(conv.GetID())
@@ -287,6 +399,7 @@ func (a *app) saveHistory(h *events.HistorySync) {
 		}
 	}
 	log.Printf("Historial recibido: %d mensajes revisados", n)
+	a.scheduleFix()
 }
 
 func boolInt(b bool) int {
@@ -304,6 +417,7 @@ CREATE TABLE IF NOT EXISTS mensajes (
   PRIMARY KEY (id, chat));
 CREATE INDEX IF NOT EXISTS idx_mensajes_chat_ts ON mensajes(chat, ts);
 CREATE INDEX IF NOT EXISTS idx_mensajes_ts ON mensajes(ts);
+CREATE TABLE IF NOT EXISTS nombres (jid TEXT PRIMARY KEY, nombre TEXT);
 CREATE TABLE IF NOT EXISTS chats (
   jid TEXT PRIMARY KEY, nombre TEXT, grupo INTEGER, ultimo_ts INTEGER);`)
 	if err != nil {
@@ -350,6 +464,9 @@ func (a *app) serveHTTP() {
 	mux.HandleFunc("/api/messages", a.auth(a.handleMessages))
 	mux.HandleFunc("/api/search", a.auth(a.handleSearch))
 	mux.HandleFunc("/api/send", a.auth(a.handleSend))
+	mux.HandleFunc("/api/fix-names", a.auth(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]int{"actualizados": a.fixNames()})
+	}))
 	log.Println("API escuchando en :8080")
 	log.Fatal(http.ListenAndServe(":8080", mux))
 }
@@ -495,8 +612,9 @@ func (a *app) handleMessages(w http.ResponseWriter, r *http.Request) {
 	qs := r.URL.Query()
 	jid, name := a.resolveChat(qs.Get("chat"))
 	if jid == "" {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusNotFound)
-		writeJSON(w, map[string]interface{}{"error": "chat no encontrado", "parecidos": a.listChats(qs.Get("chat"), 10)})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"error": "chat no encontrado", "parecidos": a.listChats(qs.Get("chat"), 10)})
 		return
 	}
 	since := parseSince(qs.Get("since"))
@@ -515,6 +633,10 @@ func (a *app) handleMessages(w http.ResponseWriter, r *http.Request) {
 		var m msgRow
 		if rows.Scan(&ts, &m.Quien, &m.Texto) == nil {
 			m.Hora = time.Unix(ts, 0).Local().Format("2006-01-02 15:04")
+			m.Texto = a.withMentions(m.Texto)
+			if m.Quien == "" {
+				m.Quien = "?"
+			}
 			msgs = append(msgs, m)
 		}
 	}
