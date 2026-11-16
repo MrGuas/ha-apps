@@ -1,0 +1,31 @@
+configuration:
+  api_token:
+    name: Token de la API
+    description: >-
+      Contraseña para usar la API desde fuera de la interfaz de Home Assistant
+      (automatizaciones, scripts, asistentes). Envíala en la cabecera
+      "Authorization: Bearer <token>". Vacío = la API solo responde a la interfaz.
+  allowed_send:
+    name: Destinos permitidos (lista blanca)
+    description: >-
+      Chats a los que las automatizaciones (origen "auto") pueden enviar sin
+      confirmación. Acepta nombre exacto del chat, número de teléfono o JID.
+  notify_service:
+    name: Servicio de notificación
+    description: >-
+      Servicio notify de la app móvil de Home Assistant que recibe los avisos y
+      los botones Enviar/Cancelar. Ejemplo: notify.mobile_app_mi_movil.
+      Vacío = solo se confirma desde la pantalla de la App.
+  country_code:
+    name: Prefijo de país
+    description: >-
+      Prefijo que se añade a los números escritos sin él (por ejemplo, 34 para
+      España). Los números con + o 00 delante no se tocan.
+  max_per_day:
+    name: Máximo de envíos al día
+    description: Límite de seguridad de mensajes enviados en un mismo día.
+  late_minutes:
+    name: Minutos de margen
+    description: >-
+      Si un mensaje programado lleva más de estos minutos de retraso (por ejemplo,
+      porque Home Assistant estaba apagado) no se envía y se avisa.

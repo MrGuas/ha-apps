@@ -1,0 +1,11 @@
+# Binarios y datos locales
+whatsapp_puente/app/puente
+*.db
+*.db-wal
+*.db-shm
+options.json
+
+# Editores y sistema
+.idea/
+.vscode/
+.DS_Store

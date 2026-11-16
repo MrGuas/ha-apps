@@ -38,6 +38,7 @@ type options struct {
 	NotifyService string   `json:"notify_service"`
 	MaxPerDay     int      `json:"max_per_day"`
 	LateMinutes   int      `json:"late_minutes"`
+	CountryCode   string   `json:"country_code"`
 }
 
 type app struct {
@@ -93,8 +94,13 @@ func (a *app) loadOptions() {
 	if err == nil {
 		_ = json.Unmarshal(b, &a.opt)
 	}
+	a.opt.NotifyService = strings.TrimSpace(a.opt.NotifyService)
 	if a.opt.NotifyService == "" {
-		a.opt.NotifyService = "notify.mobile_app_aitoroneplus"
+		log.Println("AVISO: notify_service vacío; las confirmaciones solo se podrán hacer desde la pantalla de la App.")
+	}
+	a.opt.CountryCode = strings.Trim(strings.TrimSpace(a.opt.CountryCode), "+")
+	if a.opt.CountryCode == "" {
+		a.opt.CountryCode = "34"
 	}
 	if a.opt.MaxPerDay <= 0 {
 		a.opt.MaxPerDay = 20

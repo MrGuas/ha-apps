@@ -1,0 +1,31 @@
+configuration:
+  api_token:
+    name: API token
+    description: >-
+      Password for using the API outside the Home Assistant UI (automations,
+      scripts, assistants). Send it as "Authorization: Bearer <token>".
+      Empty = the API only answers the Home Assistant UI (Ingress).
+  allowed_send:
+    name: Allowed destinations (allowlist)
+    description: >-
+      Chats that automations (origin "auto") may message without confirmation.
+      Accepts the exact chat name, a phone number or a JID.
+  notify_service:
+    name: Notification service
+    description: >-
+      Home Assistant companion app notify service that receives alerts and the
+      Send/Cancel buttons, e.g. notify.mobile_app_my_phone.
+      Empty = confirmations only from the add-on page.
+  country_code:
+    name: Country calling code
+    description: >-
+      Added to phone numbers written without it (e.g. 34 for Spain, 1 for the US).
+      Numbers starting with + or 00 are left untouched.
+  max_per_day:
+    name: Max messages per day
+    description: Safety limit on messages sent in a single day.
+  late_minutes:
+    name: Late margin (minutes)
+    description: >-
+      A scheduled message running later than this (e.g. Home Assistant was off)
+      is not sent and you get notified instead.

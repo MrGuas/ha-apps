@@ -1,0 +1,34 @@
+name: Error
+description: Algo no funciona como debería
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Antes de nada, revisa *Problemas frecuentes* en la documentación de la App.
+        **No pegues números de teléfono, nombres, tokens ni textos de mensajes.**
+  - type: input
+    id: version
+    attributes:
+      label: Versión de la App
+      placeholder: "0.4.0"
+    validations:
+      required: true
+  - type: input
+    id: ha
+    attributes:
+      label: Versión de Home Assistant y arquitectura
+      placeholder: "2026.11.2, aarch64 (Raspberry Pi 5)"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: Qué ha pasado y qué esperabas
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Registro de la App (anonimizado)
+      render: text

@@ -1,9 +1,10 @@
 // Mensajes programados: cola en SQLite que la propia App envía a su hora.
 //
-// Reglas de seguridad (pedidas por Aitor):
-//   - origen "pantalla": lo programa Aitor desde la interfaz → sin restricciones.
-//   - origen "claude":   lo programa Claude → SIEMPRE queda "por_confirmar" hasta que Aitor
-//     pulse "Enviar" en la notificación del móvil (o en la pantalla).
+// Reglas de seguridad según quién programa el mensaje:
+//   - origen "pantalla": el propio usuario desde la interfaz (Ingress) → sin restricciones.
+//   - origen "api":      un asistente o integración por la API → SIEMPRE queda "por_confirmar"
+//     hasta que el usuario pulse "Enviar" en la notificación del móvil (o en la pantalla).
+//     (los registros antiguos con origen "claude" se tratan igual.)
 //   - origen "auto":     automatizaciones que se repiten → solo a destinos de la lista blanca;
 //     si el destino no está en la lista, también pasa a "por_confirmar".
 package main
@@ -46,7 +47,7 @@ const fmtHora = "02/01/2006 15:04"
 func (a *app) routesProgramados(mux *http.ServeMux) {
 	mux.HandleFunc("/ui/programar", a.onlyIngress(a.handleUIProgramar)) // desde la pantalla: sin restricciones
 	mux.HandleFunc("/ui/confirmar", a.onlyIngress(a.handleConfirmar))
-	mux.HandleFunc("/api/programar", a.auth(a.handleAPIProgramar)) // Claude / automatizaciones
+	mux.HandleFunc("/api/programar", a.auth(a.handleAPIProgramar)) // asistentes / automatizaciones
 	mux.HandleFunc("/api/send", a.auth(a.handleAPIProgramar))      // compatibilidad: igual que programar "ahora"
 	mux.HandleFunc("/api/programados", a.auth(a.handleListar))
 	mux.HandleFunc("/api/cancelar", a.auth(a.handleCancelar))
@@ -97,10 +98,12 @@ func (a *app) resolveExact(to string) (types.JID, string, []chatRow, error) {
 		}
 		return j, firstNonEmpty(a.chatName(j), j.User), nil, nil
 	}
-	digits := strings.TrimPrefix(strings.ReplaceAll(to, " ", ""), "+")
+	compact := strings.NewReplacer(" ", "", "-", "", "(", "", ")", "").Replace(to)
+	international := strings.HasPrefix(compact, "+") || strings.HasPrefix(compact, "00")
+	digits := strings.TrimPrefix(strings.TrimPrefix(compact, "+"), "00")
 	if _, err := strconv.ParseUint(digits, 10, 64); err == nil && len(digits) >= 8 {
-		if len(digits) == 9 { // número español sin prefijo
-			digits = "34" + digits
+		if !international && len(digits) <= 10 { // número nacional: se añade el prefijo del país
+			digits = a.opt.CountryCode + strings.TrimLeft(digits, "0")
 		}
 		j := types.NewJID(digits, types.DefaultUserServer)
 		return j, firstNonEmpty(a.chatName(j), "+"+digits), nil, nil
@@ -125,8 +128,9 @@ func (a *app) inWhitelist(j types.JID, name string) bool {
 		if x == "" {
 			continue
 		}
-		if strings.EqualFold(x, name) || x == j.String() || strings.TrimPrefix(x, "+") == j.User ||
-			("34"+strings.TrimPrefix(x, "+")) == j.User {
+		num := strings.TrimPrefix(strings.ReplaceAll(x, " ", ""), "+")
+		if strings.EqualFold(x, name) || x == j.String() || num == j.User ||
+			(a.opt.CountryCode+strings.TrimLeft(num, "0")) == j.User {
 			return true
 		}
 	}
@@ -142,7 +146,7 @@ func (a *app) insertProgramado(j types.JID, name, texto string, cuando time.Time
 	return res.LastInsertId()
 }
 
-/* ---------- desde la pantalla (Aitor): sin restricciones ---------- */
+/* ---------- desde la pantalla (el usuario, vía Ingress): sin restricciones ---------- */
 func (a *app) handleUIProgramar(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Chat   string `json:"chat"`
@@ -176,7 +180,7 @@ func (a *app) handleUIProgramar(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{"ok": true, "id": id, "cuando": t.Format(fmtHora)})
 }
 
-/* ---------- API (Claude / automatizaciones) ---------- */
+/* ---------- API (asistentes / automatizaciones) ---------- */
 func (a *app) handleAPIProgramar(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		jsonError(w, 405, "usa POST", nil)
@@ -202,7 +206,7 @@ func (a *app) handleAPIProgramar(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, 400, err.Error(), nil)
 		return
 	}
-	origen := "claude"
+	origen := "api"
 	if req.Origen == "auto" {
 		origen = "auto"
 	}
@@ -293,7 +297,7 @@ func (a *app) handleCancelar(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{"ok": n == 1})
 }
 
-// Confirmación desde la pantalla (solo Ingress, es decir, Aitor con su sesión de Home Assistant)
+// Confirmación desde la pantalla (solo Ingress, es decir, el usuario con su sesión de Home Assistant)
 func (a *app) handleConfirmar(w http.ResponseWriter, r *http.Request) {
 	ok := a.confirmar(idFromReq(r))
 	writeJSON(w, map[string]interface{}{"ok": ok})
@@ -386,7 +390,7 @@ func (a *app) processDue() {
 				a.setEstado(id, "caducado", "no se confirmó a tiempo")
 				a.notify("⏰ WhatsApp sin enviar", fmt.Sprintf("No confirmaste el mensaje a %s y no se ha enviado:\n«%s»", dest, recorta(p.Texto, 120)), nil)
 			}
-			continue // espera a que Aitor confirme
+			continue // espera a que el usuario confirme
 		}
 		if retraso > late {
 			a.setEstado(id, "caducado", fmt.Sprintf("llevaba %s de retraso", retraso.Round(time.Minute)))
@@ -394,7 +398,7 @@ func (a *app) processDue() {
 				dest, time.Unix(p.CuandoTS, 0).Format("15:04"), retraso.Round(time.Minute), recorta(p.Texto, 120)), nil)
 			continue
 		}
-		// ¿Aitor ya ha escrito en ese chat desde que lo programó? Entonces preguntar antes.
+		// ¿El usuario ya ha escrito en ese chat desde que se programó? Entonces preguntar antes.
 		{
 			var creado int64
 			_ = a.db.QueryRow(`SELECT creado FROM programados WHERE id = ?`, id).Scan(&creado)
@@ -515,7 +519,7 @@ func (a *app) askConfirm(id int64) {
 	if time.Unix(p.CuandoTS, 0).After(time.Now().Add(time.Minute)) {
 		cuando = "el " + p.Cuando
 	}
-	a.askConfirmText(id, fmt.Sprintf("Claude quiere enviar a %s %s:\n«%s»", firstNonEmpty(p.ChatNombre, p.Chat), cuando, recorta(p.Texto, 300)))
+	a.askConfirmText(id, fmt.Sprintf("Un asistente quiere enviar a %s %s:\n«%s»", firstNonEmpty(p.ChatNombre, p.Chat), cuando, recorta(p.Texto, 300)))
 }
 
 func (a *app) askConfirmText(id int64, msg string) {

@@ -50,7 +50,7 @@ button.sec{background:transparent;color:var(--txt);border:1px solid var(--line)}
 <div class="card"><h2>🕒 Programados</h2>
 {{if .P}}{{range .P}}<div class="p"><div class="t">
 <b>{{if .ChatNombre}}{{.ChatNombre}}{{else}}{{.Chat}}{{end}}</b><span class="tag {{.Estado}}">{{if eq .Estado "por_confirmar"}}por confirmar{{else if eq .Estado "pendiente"}}programado{{else}}{{.Estado}}{{end}}</span>
-<div class="sub">{{if .Enviado}}enviado {{.Enviado}}{{else}}para el {{.Cuando}}{{end}} · {{if eq .Origen "pantalla"}}programado por ti{{else if eq .Origen "claude"}}programado por Claude{{else}}automático{{end}}{{if .Error}} · {{.Error}}{{end}}</div>
+<div class="sub">{{if .Enviado}}enviado {{.Enviado}}{{else}}para el {{.Cuando}}{{end}} · {{if eq .Origen "pantalla"}}programado por ti{{else if or (eq .Origen "api") (eq .Origen "claude")}}programado por un asistente{{else}}automático{{end}}{{if .Error}} · {{.Error}}{{end}}</div>
 <div class="m">{{.Texto}}</div></div>
 <div class="btns">{{if eq .Estado "por_confirmar"}}<button data-ok="{{.ID}}">Enviar</button>{{end}}
 {{if or (eq .Estado "pendiente") (eq .Estado "por_confirmar")}}<button class="sec" data-no="{{.ID}}">Cancelar</button>{{end}}</div></div>{{end}}
@@ -69,7 +69,7 @@ button.sec{background:transparent;color:var(--txt);border:1px solid var(--line)}
 <div class="btns"><button class="prog">Programar</button><button class="sec ahora">Enviar ahora</button><button class="sec cerrar">Cerrar</button></div>
 <div class="msg"></div></div></template>
 
-<p class="sub">Solo se guarda el texto. Lo que programas aquí sale tal cual; lo que programa Claude espera a que lo confirmes en el móvil.</p>
+<p class="sub">Solo se guarda el texto. Lo que programas aquí sale tal cual; lo que programa un asistente por la API espera a que lo confirmes.</p>
 </main>
 <script>
 const $=(s,e=document)=>e.querySelector(s);
