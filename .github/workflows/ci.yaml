@@ -27,7 +27,7 @@ jobs:
         working-directory: whatsapp_puente/app
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: whatsapp_puente/app/go.mod
           cache-dependency-path: whatsapp_puente/app/go.sum
