@@ -6,8 +6,6 @@ url: https://github.com/MrGuas/ha-apps/tree/main/whatsapp_puente
 arch:
   - amd64
   - aarch64
-startup: application
-boot: auto
 init: false
 homeassistant_api: true
 ingress: true
