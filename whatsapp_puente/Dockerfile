@@ -10,7 +10,7 @@ RUN go mod download
 COPY app/ ./
 RUN go build -trimpath -ldflags="-s -w" -o /out/puente .
 
-FROM alpine:3.22
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates tzdata
 COPY --from=build /out/puente /usr/bin/puente
 
