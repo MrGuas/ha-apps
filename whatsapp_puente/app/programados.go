@@ -399,7 +399,9 @@ func (a *app) processDue() {
 			continue
 		}
 		// ¿El usuario ya ha escrito en ese chat desde que se programó? Entonces preguntar antes.
-		{
+		// No se aplica a los envíos automáticos de la lista blanca (origen "auto"): son series que se
+		// repiten en chats activos y cada aviso enviado ya cuenta como mensaje propio.
+		if p.Origen != "auto" {
 			var creado int64
 			_ = a.db.QueryRow(`SELECT creado FROM programados WHERE id = ?`, id).Scan(&creado)
 			var n int
